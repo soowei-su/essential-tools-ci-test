@@ -1,0 +1,5 @@
+GET /home 200
+GET /about 404
+GET /home 200
+POST /login 200
+GET /home 500

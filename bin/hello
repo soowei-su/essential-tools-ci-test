@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# hello -- a stand-in for the toolkit scripts that `make lint` checks
+set -euo pipefail
+echo "hello, ${1:-course}"

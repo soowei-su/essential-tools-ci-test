@@ -1,0 +1,14 @@
+name: ci
+on: push                     # the trigger: every push, every branch
+
+jobs:
+  checks:                    # a job: one fresh virtual machine
+    runs-on: ubuntu-latest   # ...running the OS you already know
+    steps:
+      - uses: actions/checkout@v7        # step 1: clone the repo
+      - uses: actions/setup-python@v7    # step 2: install a python
+        with:
+          python-version: "3.12"
+      - run: make setup                  # your verbs, unchanged
+      - run: make lint
+      - run: make test
