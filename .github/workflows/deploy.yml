@@ -1,0 +1,113 @@
+name: deploy
+on:
+  push:
+    branches: [main]
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - run: make setup
+      - run: make lint
+      - run: make test
+
+  deploy:
+    needs: checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      # ---- test harness only: a stand-in for the student's VPS ----------------
+      - name: Start a stand-in server at 172.30.0.10 (harness, not course material)
+        env:
+          STANDIN_HOST_KEY: ${{ secrets.STANDIN_HOST_KEY }}
+        run: |
+          docker network create --subnet 172.30.0.0/24 boxnet
+          docker run -d --name box --hostname box-standin \
+            --network boxnet --ip 172.30.0.10 \
+            -e HOST_KEY="$STANDIN_HOST_KEY" \
+            -e AUTH_KEY="$(cat harness/authorized_key.pub)" \
+            alpine:3.20 sh -c '
+              apk add --no-cache openssh-server >/dev/null &&
+              adduser -D deploy && sed -i "s/^deploy:!/deploy:*/" /etc/shadow &&
+              mkdir -p /home/deploy/.ssh &&
+              printf "%s\n" "$AUTH_KEY" > /home/deploy/.ssh/authorized_keys &&
+              chown -R deploy:deploy /home/deploy/.ssh &&
+              chmod 700 /home/deploy/.ssh && chmod 600 /home/deploy/.ssh/authorized_keys &&
+              printf "%s\n" "$HOST_KEY" > /etc/ssh/ssh_host_ed25519_key &&
+              chmod 600 /etc/ssh/ssh_host_ed25519_key &&
+              exec /usr/sbin/sshd -D -e -h /etc/ssh/ssh_host_ed25519_key'
+          for _ in $(seq 1 60); do nc -z 172.30.0.10 22 && break; sleep 1; done
+          docker logs box | tail -5
+      # ---- end harness -----------------------------------------------------
+
+      - name: Recreate the laptop SSH setup
+        env:
+          DEPLOY_KEY: ${{ secrets.DEPLOY_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+        run: |
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf '%s\n' "$DEPLOY_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
+          printf 'Host box\n  HostName %s\n  User %s\n  IdentityFile ~/.ssh/deploy_key\n' \
+            "$DEPLOY_HOST" "$DEPLOY_USER" > ~/.ssh/config
+      - run: make deploy          # the Assignment 9 recipe, untouched
+
+  # Harness check of a claim in the notes: with the wrong host key pinned,
+  # ssh must refuse with "Host key verification failed".
+  pinning-check:
+    needs: checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      # ---- test harness only: a stand-in for the student's VPS ----------------
+      - name: Start a stand-in server at 172.30.0.10 (harness, not course material)
+        env:
+          STANDIN_HOST_KEY: ${{ secrets.STANDIN_HOST_KEY }}
+        run: |
+          docker network create --subnet 172.30.0.0/24 boxnet
+          docker run -d --name box --hostname box-standin \
+            --network boxnet --ip 172.30.0.10 \
+            -e HOST_KEY="$STANDIN_HOST_KEY" \
+            -e AUTH_KEY="$(cat harness/authorized_key.pub)" \
+            alpine:3.20 sh -c '
+              apk add --no-cache openssh-server >/dev/null &&
+              adduser -D deploy && sed -i "s/^deploy:!/deploy:*/" /etc/shadow &&
+              mkdir -p /home/deploy/.ssh &&
+              printf "%s\n" "$AUTH_KEY" > /home/deploy/.ssh/authorized_keys &&
+              chown -R deploy:deploy /home/deploy/.ssh &&
+              chmod 700 /home/deploy/.ssh && chmod 600 /home/deploy/.ssh/authorized_keys &&
+              printf "%s\n" "$HOST_KEY" > /etc/ssh/ssh_host_ed25519_key &&
+              chmod 600 /etc/ssh/ssh_host_ed25519_key &&
+              exec /usr/sbin/sshd -D -e -h /etc/ssh/ssh_host_ed25519_key'
+          for _ in $(seq 1 60); do nc -z 172.30.0.10 22 && break; sleep 1; done
+          docker logs box | tail -5
+      # ---- end harness -----------------------------------------------------
+
+      - name: Recreate the laptop SSH setup
+        env:
+          DEPLOY_KEY: ${{ secrets.DEPLOY_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+        run: |
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf '%s\n' "$DEPLOY_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
+          printf 'Host box\n  HostName %s\n  User %s\n  IdentityFile ~/.ssh/deploy_key\n' \
+            "$DEPLOY_HOST" "$DEPLOY_USER" > ~/.ssh/config
+      - name: Swap in an impostor's host key and expect refusal
+        run: |
+          cp harness/wrong_known_hosts ~/.ssh/known_hosts
+          if ssh box hostname 2> err.txt; then
+            echo "UNEXPECTED: connected despite the wrong host key"; exit 1
+          fi
+          cat err.txt
+          grep -q "Host key verification failed" err.txt
